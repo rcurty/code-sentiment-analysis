@@ -1,0 +1,275 @@
+---
+title: "Workshop Workbook - Sentiment Analysis in R"
+format: html
+editor: visual
+---
+
+# Setup
+
+### *Improve qmd rendering*
+
+```{r setup, include=FALSE}
+# Setting global chunk options
+knitr::opts_chunk$set(
+  echo = FALSE,      # do not show code
+  message = FALSE,   # suppress messages
+  warning = FALSE    # suppress warnings
+)
+```
+
+### *Install & Load Required Packages*
+
+To complete our workflow we will need a dozen packages:
+
+```{r packages_install}
+install.packages(c("tidyverse", "textclean", "emoji", "stringi", "tidytext", "stopwords", "textstem", "sentimentr", "syuzhet", "lexicon", "ggplot2", "tidyr"
+))
+```
+
+```{r pakages_load}
+library(tidyverse)   # data manipulation and visualization
+library(dplyr)       # data wrangling
+library(stringr)     # string manipulation
+library(textclean)   # expand contractions
+library(emoji)       # emoji conversion
+library(stringi)     # string operations (emoji replacement)
+library(tidytext)    # tokenization
+library(stopwords)   # stopword removal
+library(textstem)    # lemmatization
+library(sentimentr)  # polarity/sentiment analysis
+library(syuzhet)     # NRC emotion lexicon
+library(lexicon)     # used by sentimentr
+library(tidyr)       # data reshaping
+library(ggplot2)     # plots
+library(readr)       # read/write CSV
+```
+
+# PART I. Normalizing the Data
+
+### *Load & Inspect the Data*
+
+```{r inspect_comments}
+comments <- read_csv("comments.csv")
+
+head(comments$text)
+```
+
+### *Applying Normalization*
+
+```{r normalizing}
+# Normalize apostrophes
+comments$text <- gsub("[’‘ʼ`]", "'", comments$text)
+
+# Expand contractions
+comments <- comments %>%
+  mutate(text_expand = replace_contraction(text))
+
+# Convert to lowercase
+comments <- comments %>%
+  mutate(text_lower = tolower(text_expand))
+
+# Remove URLs
+comments <- comments %>%
+  mutate(text_nourl = str_replace_all(text_lower, "http[s]?://[^\\s,]+|www\\.[^\\s,]+", ""))
+
+# Remove mentions (@username)
+comments <- comments %>%
+  mutate(text_nomention = str_replace_all(text_nourl, "@[A-Za-z0-9_]+", ""),
+         text_nomention = str_squish(text_nomention))
+
+# Remove punctuation & numbers
+comments <- comments %>%
+  mutate(text_cleaned = text_nomention %>%
+           str_replace_all("[[:punct:]“”‘’–—…|]", "") %>%
+           str_replace_all("[[:digit:]]", "") %>%
+           str_replace_all("(.)\\1{2,}", "\\1") %>%  # collapse repeated letters in a row eg. "Amaaazing"
+           str_squish()
+  )
+
+# Convert emojis to text
+emoji_dict <- emo::jis[, c("emoji", "name")]
+emoji_dict$name <- paste0("[", emoji_dict$name, "]")
+
+replace_emojis <- function(text, emoji_dict) {
+  stri_replace_all_fixed(
+    str = text, 
+    pattern = emoji_dict$emoji, 
+    replacement = emoji_dict$name, 
+    vectorize_all = FALSE
+  )
+}
+
+comments <- comments %>%
+  mutate(text_noemoji = replace_emojis(text_cleaned, emoji_dict),
+         text = str_replace_all(text_noemoji, "[^[:alpha:][:space:]]", ""),
+         text = str_squish(text))
+
+# Save normalized data
+write_csv(comments %>% select(id, text), "normalized.csv")
+```
+
+# PART II. Text Pre-Processing
+
+### *Load & Inspect Normalized Data*
+
+```{r}
+library(tidytext)
+library(stopwords)
+library(dplyr)
+library(textstem)
+library(readr)
+library(stringr) #for extra steps cleanup
+```
+
+```{r inspect_normalized}
+normalized <- read_csv("normalized.csv")
+
+head(normalized$text)
+```
+
+### *Implementing Tokenization, Stop Words Removal and Lemmatization*
+
+```{r}
+# Force 'id' to be read as character to preserve values like "s1_0001"
+# 'text_clean' is the column that contains the text you want to process
+data <- read_csv("normalized.csv",
+                 col_types = cols(
+                   id = col_character(),
+                   text = col_character()
+                 ))
+
+# Optional: check first few rows
+head(data)
+
+# -----------------------------
+# Step 2: Tokenize text
+# -----------------------------
+# Break each text entry into individual words while keeping 'id'
+tokens <- data %>%
+  unnest_tokens(word, text)       # creates one row per word
+
+# Optional: inspect tokens
+head(tokens)
+
+# -----------------------------
+# Step 3: Remove stop words
+# -----------------------------
+# Stop words are common words like 'the', 'and', 'is' that usually don't carry meaning
+tokens_nostop <- tokens %>%
+  filter(!word %in% stopwords("en"))
+
+# -----------------------------
+# Step 4: Lemmatize words
+# -----------------------------
+# Reduce words to their base form (e.g., 'running' -> 'run')
+tokens_nostop <- tokens_nostop %>%
+  mutate(word_lemmatized = lemmatize_words(word))
+
+# -----------------------------
+# Step 5: Remove any remaining single-character words
+# -----------------------------
+tokens_nostop <- tokens_nostop %>%
+  filter(str_length(word_lemmatized) > 1)
+
+# -----------------------------
+# Step 6: Reconstruct cleaned text per ID
+# -----------------------------
+# Combine the lemmatized words back into full sentences for each original text
+preprocessed <- tokens_nostop %>%
+  group_by(id) %>%
+  summarise(text_ready = paste(word_lemmatized, collapse = " ")) %>%
+  ungroup()
+
+# Save to CSV with two columns: 'id' and 'text_ready'
+write.csv(preprocessed, "preprocessed.csv")
+```
+
+# PART III. Sentiment Analysis
+
+### *Load & Inspect the Pre-processed Data*
+
+```{r inspecting_data}
+preprocessed <- read_csv("preprocessed.csv")
+
+head(preprocessed$text_analysis)
+```
+
+```{r polarity}
+
+#### Polarity with Sentiment R 
+
+##### Avoid repeated sentence parsing and warning
+sentences_list <- get_sentences(preprocessed$text_ready)
+
+##### Calculate sentiment per row and add labels and columns to dataset
+sentiment_scores <- sentiment_by(sentences_list)$ave_sentiment
+data <- data %>%
+  mutate(score = sentiment_scores,
+         sentiment_label = case_when(
+           score > 0.1  ~ "positive",
+           score < -0.1 ~ "negative",
+           TRUE         ~ "neutral"
+         ))
+
+head(data)
+
+# Visualize
+
+ggplot(data, aes(x = score)) +
+  geom_histogram(binwidth = 0.1, fill = "skyblue", color = "white") +
+  theme_minimal() +
+  labs(title = "Sentiment Score Distribution", x = "Average Sentiment", y = "Count")
+
+table(data$sentiment_label)
+
+# Check for extreme cases
+head(data[order(data$score), ], 10)   # Most negative
+head(data[order(-data$score), ], 10)  # Most positive
+
+# Plotting Scores
+ggplot(data, aes(x = seq_along(score), y = score)) +
+  geom_line(color = "steelblue") +
+  geom_smooth(se = FALSE, color = "orange") +
+  theme_minimal() +
+  labs(title = "Sentiment Trajectory by Entry", x = "Entry Order", y = "Average Sentiment")
+```
+
+```{r}
+# Fine-grained Emotions (NRC)
+emotion_scores <- get_nrc_sentiment(data$text_analysis)
+data_emotions <- bind_cols(data, emotion_scores)
+
+# Summarize overall emotions
+emotion_summary <- emotion_scores %>%
+  summarise(across(everything(), sum)) %>%
+  pivot_longer(cols = everything(), names_to = "emotion", values_to = "count")
+
+# Plot overall emotions
+ggplot(emotion_summary, aes(x = reorder(emotion, -count), y = count, fill = emotion)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal(base_size = 14) +
+  labs(title = "Overall Emotion Distribution", x = "Emotion", y = "Total Count")
+
+# Combine polarity & emotions
+final_table <- data_emotions %>%
+  select(id, text_analysis, score, sentiment_label, anger:trust) %>%
+  pivot_longer(cols = anger:trust, names_to = "emotion", values_to = "emotion_score")
+
+# Save results
+write_csv(final_table, "sentiment_emotion_results.csv")
+
+# Emotion co-occurrence
+emotion_binary <- (select(data_emotions, anger:trust) > 0) * 1
+co_matrix <- t(as.matrix(emotion_binary)) %*% as.matrix(emotion_binary)
+co_df <- as.data.frame(as.table(co_matrix))
+colnames(co_df) <- c("Emotion1", "Emotion2", "Cooccurrence")
+
+# Co-occurrence heatmap
+ggplot(co_df %>% filter(Emotion1 != Emotion2), aes(x = Emotion1, y = Emotion2, fill = Cooccurrence)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "darkred") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Emotion Co-occurrence Heatmap", x = "Emotion", y = "Emotion", fill = "Co-occurrence")
+```
