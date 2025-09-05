@@ -132,8 +132,10 @@ head(normalized$text)
 
 ### *Implementing Tokenization, Stop Words Removal and Lemmatization*
 
+Reviedw probelm with data object, not keepng all observations why 1786?
+
 ```{r}
-# Force 'id' to be read as character to preserve values like "s1_0001"
+# Force 'id' to be read as character "s1_0001"
 data <- read_csv("normalized.csv",
                  col_types = cols(
                    id = col_character(),
@@ -182,15 +184,15 @@ preprocessed <- read_csv("preprocessed.csv")
 head(preprocessed$text_ready)
 ```
 
-### *Polarity with Sentiment R*
+### *Polarity with Sentiment R (Valence Sifters Capability)*
 
 ```{r polarity}
 
 # Compute sentiment per row/case
-sentiment_scores <- sentiment_by(data$text)
+sentiment_scores <- sentiment_by(preprocessed$text_ready)
 
-# Bind results back by row index
-data <- data %>%
+# Add scores and labels to original dataset
+polarity <- preprocessed %>%
   mutate(score = sentiment_scores$ave_sentiment,
          sentiment_label = case_when(
            score > 0.1  ~ "positive",
@@ -198,34 +200,34 @@ data <- data %>%
            TRUE         ~ "neutral"
          ))
 
-head(data)
+head(polarity)
 
 # Visualize
 
-ggplot(data, aes(x = score)) +
+ggplot(polarity, aes(x = score)) +
   geom_histogram(binwidth = 0.1, fill = "skyblue", color = "white") +
   theme_minimal() +
   labs(title = "Sentiment Score Distribution", x = "Average Sentiment", y = "Count")
 
-table(data$sentiment_label)
+table(polarity$sentiment_label)
 
 # Check for extreme cases
-head(data[order(data$score), ], 10)   # Most negative
-head(data[order(-data$score), ], 10)  # Most positive
+head(polarity[order(polarity$score), ], 10)   # Most negative
+head(polarity[order(-polarity$score), ], 10)  # Most positive
 
 # Plotting Scores
-ggplot(data, aes(x = seq_along(score), y = score)) +
+ggplot(polarity, aes(x = seq_along(score), y = score)) +
   geom_line(color = "steelblue") +
   geom_smooth(se = FALSE, color = "orange") +
   theme_minimal() +
   labs(title = "Sentiment Trajectory by Entry", x = "Entry Order", y = "Average Sentiment")
 
 # Extract season info (s1, s2) into a new column
-data <- data %>%
+polarity_seasons <- polarity %>%
   mutate(season = str_extract(id, "s\\d+"))
 
 # Histogram comparison by season
-ggplot(data, aes(x = score, fill = season)) +
+ggplot(polarity_seasons, aes(x = score, fill = season)) +
   geom_histogram(binwidth = 0.1, position = "dodge", color = "white") +
   theme_minimal() +
   labs(title = "Sentiment Score Distribution by Season", 
@@ -233,30 +235,25 @@ ggplot(data, aes(x = score, fill = season)) +
   scale_fill_brewer(palette = "Set1")
 
 # Sentiment trajectory by season (faceted)
-ggplot(data, aes(x = seq_along(score), y = score, color = season)) +
+ggplot(polarity_seasons, aes(x = seq_along(score), y = score, color = season)) +
   geom_line(alpha = 0.7) +
   geom_smooth(se = FALSE) +
   theme_minimal() +
   labs(title = "Sentiment Trajectory by Season", 
        x = "Entry Order", y = "Average Sentiment") +
   facet_wrap(~season, scales = "free_x")
-
-# Extract season info
-data <- data %>%
-  mutate(season = str_extract(id, "s\\d+")) %>%
-  group_by(season) %>%
-  mutate(entry_order = row_number()) %>%  # order within season
-  ungroup()
 ```
 
 ### *Fine-grained Emotions with* Syuzhet's NRC Emotion Lexicon
 
-```{r fine-grained}
-emotion_scores <- get_nrc_sentiment(preprocessed$text_ready)
-data_emotions <- bind_cols(preprocessed, emotion_scores)
+wide format for the table, heatmap with all 8 emotions, not selected ones, rows with higher emotion scores (across all 8)
+
+```{r fine-grained, warning=FALSE}
+emotion_score <- get_nrc_sentiment(preprocessed$text_ready)
+emotion_data <- bind_cols(preprocessed, emotion_score)
 
 # Summarize overall emotions
-emotion_summary <- emotion_scores %>%
+emotion_summary <- emotion_score %>%
   summarise(across(everything(), sum)) %>%
   pivot_longer(cols = everything(), names_to = "emotion", values_to = "count")
 
@@ -268,18 +265,30 @@ ggplot(emotion_summary, aes(x = reorder(emotion, -count), y = count, fill = emot
   labs(title = "Overall Emotion Distribution", x = "Emotion", y = "Total Count")
 
 # Combine polarity & emotions
-final_table <- data_emotions %>%
-  select(id, text_analysis, score, sentiment_label, anger:trust) %>%
+emotion_data <- emotion_data %>%
+  select(id, text_ready, anger:trust) %>%
   pivot_longer(cols = anger:trust, names_to = "emotion", values_to = "emotion_score")
 
 # Save results
-write_csv(final_table, "sentiment_emotion_results.csv")
+write_csv(emotion_data, "sentiment_emotion_results.csv")
 
-# Emotion co-occurrence
-emotion_binary <- (select(data_emotions, anger:trust) > 0) * 1
+# Emotion co-occurrence example (anger vs. trust)
+# Select emotions of interest
+emotion_subset <- emotion_data %>%
+  filter(emotion %in% c("anger", "trust")) %>%
+  select(emotion)
+
+# Convert scores to binary (0/1) for co-occurrence
+emotion_binary <- (emotion_subset> 0) * 1
+
+# Compute co-occurrence matrix
 co_matrix <- t(as.matrix(emotion_binary)) %*% as.matrix(emotion_binary)
+
+# Convert to a long dataframe for plotting or inspection
 co_df <- as.data.frame(as.table(co_matrix))
 colnames(co_df) <- c("Emotion1", "Emotion2", "Cooccurrence")
+
+co_df
 
 # Co-occurrence heatmap
 ggplot(co_df %>% filter(Emotion1 != Emotion2), aes(x = Emotion1, y = Emotion2, fill = Cooccurrence)) +
