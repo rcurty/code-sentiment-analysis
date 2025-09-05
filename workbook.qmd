@@ -19,29 +19,41 @@ knitr::opts_chunk$set(
 
 ### *Install & Load Required Packages*
 
-To complete our workflow we will need a dozen packages:
+To complete our workflow we will need a dozen packages. **Copy the code to install it via your console** for on-time setup:
 
-```{r packages_install}
-install.packages(c("tidyverse", "textclean", "emoji", "stringi", "tidytext", "stopwords", "textstem", "sentimentr", "syuzhet", "lexicon", "ggplot2", "tidyr"
+```{r packages_install, eval=FALSE}
+install.packages(c(
+  "emoji",
+  "ggplot2",
+  "lexicon",
+  "sentimentr",
+  "stopwords",
+  "stringi",
+  "syuzhet",
+  "textclean",
+  "textstem",
+  "tidyr",
+  "tidytext",
+  "tidyverse"
 ))
 ```
 
-```{r pakages_load}
-library(tidyverse)   # data manipulation and visualization
+```{r pakages_load, warning=FALSE}
 library(dplyr)       # data wrangling
-library(stringr)     # string manipulation
-library(textclean)   # expand contractions
 library(emoji)       # emoji conversion
-library(stringi)     # string operations (emoji replacement)
-library(tidytext)    # tokenization
-library(stopwords)   # stopword removal
-library(textstem)    # lemmatization
-library(sentimentr)  # polarity/sentiment analysis
-library(syuzhet)     # NRC emotion lexicon
-library(lexicon)     # used by sentimentr
-library(tidyr)       # data reshaping
 library(ggplot2)     # plots
+library(lexicon)     # used by sentimentr
 library(readr)       # read/write CSV
+library(sentimentr)  # polarity/sentiment analysis
+library(stopwords)   # stopword removal
+library(stringi)     # string operations (emoji replacement)
+library(stringr)     # string manipulation
+library(syuzhet)     # NRC emotion lexicon
+library(textclean)   # expand contractions
+library(textstem)    # lemmatization
+library(tidyr)       # data reshaping
+library(tidytext)    # tokenization
+library(tidyverse)   # data manipulation and visualization
 ```
 
 # PART I. Normalizing the Data
@@ -82,7 +94,7 @@ comments <- comments %>%
   mutate(text_cleaned = text_nomention %>%
            str_replace_all("[[:punct:]“”‘’–—…|]", "") %>%
            str_replace_all("[[:digit:]]", "") %>%
-           str_replace_all("(.)\\1{2,}", "\\1") %>%  # collapse repeated letters in a row eg. "Amaaazing"
+           str_replace_all("(.)\\1{2,}", "\\1") %>%  # collapse rep. letters eg. "Amaaazing"
            str_squish()
   )
 
@@ -112,15 +124,6 @@ write_csv(comments %>% select(id, text), "normalized.csv")
 
 ### *Load & Inspect Normalized Data*
 
-```{r}
-library(tidytext)
-library(stopwords)
-library(dplyr)
-library(textstem)
-library(readr)
-library(stringr) #for extra steps cleanup
-```
-
 ```{r inspect_normalized}
 normalized <- read_csv("normalized.csv")
 
@@ -131,50 +134,35 @@ head(normalized$text)
 
 ```{r}
 # Force 'id' to be read as character to preserve values like "s1_0001"
-# 'text_clean' is the column that contains the text you want to process
 data <- read_csv("normalized.csv",
                  col_types = cols(
                    id = col_character(),
                    text = col_character()
                  ))
 
-# Optional: check first few rows
+# Check first few rows
 head(data)
 
-# -----------------------------
-# Step 2: Tokenize text
-# -----------------------------
-# Break each text entry into individual words while keeping 'id'
+# Tokenize text
 tokens <- data %>%
-  unnest_tokens(word, text)       # creates one row per word
+  unnest_tokens(word, text) # creates one row per word
 
-# Optional: inspect tokens
+# Inspect tokens
 head(tokens)
 
-# -----------------------------
-# Step 3: Remove stop words
-# -----------------------------
-# Stop words are common words like 'the', 'and', 'is' that usually don't carry meaning
+# Remove stop words
 tokens_nostop <- tokens %>%
   filter(!word %in% stopwords("en"))
 
-# -----------------------------
-# Step 4: Lemmatize words
-# -----------------------------
-# Reduce words to their base form (e.g., 'running' -> 'run')
+# Lemmatize words their base form
 tokens_nostop <- tokens_nostop %>%
   mutate(word_lemmatized = lemmatize_words(word))
 
-# -----------------------------
-# Step 5: Remove any remaining single-character words
-# -----------------------------
+# Remove any remaining single-character words
 tokens_nostop <- tokens_nostop %>%
   filter(str_length(word_lemmatized) > 1)
 
-# -----------------------------
-# Step 6: Reconstruct cleaned text per ID
-# -----------------------------
-# Combine the lemmatized words back into full sentences for each original text
+# Reconstruct cleaned text into sentenced per ID
 preprocessed <- tokens_nostop %>%
   group_by(id) %>%
   summarise(text_ready = paste(word_lemmatized, collapse = " ")) %>%
@@ -186,25 +174,24 @@ write.csv(preprocessed, "preprocessed.csv")
 
 # PART III. Sentiment Analysis
 
-### *Load & Inspect the Pre-processed Data*
+### *Load & Inspect the Pre-processed Data (text_ready)*
 
 ```{r inspecting_data}
 preprocessed <- read_csv("preprocessed.csv")
 
-head(preprocessed$text_analysis)
+head(preprocessed$text_ready)
 ```
+
+### *Polarity with Sentiment R*
 
 ```{r polarity}
 
-#### Polarity with Sentiment R 
+# Compute sentiment per row/case
+sentiment_scores <- sentiment_by(data$text)
 
-##### Avoid repeated sentence parsing and warning
-sentences_list <- get_sentences(preprocessed$text_ready)
-
-##### Calculate sentiment per row and add labels and columns to dataset
-sentiment_scores <- sentiment_by(sentences_list)$ave_sentiment
+# Bind results back by row index
 data <- data %>%
-  mutate(score = sentiment_scores,
+  mutate(score = sentiment_scores$ave_sentiment,
          sentiment_label = case_when(
            score > 0.1  ~ "positive",
            score < -0.1 ~ "negative",
@@ -232,12 +219,41 @@ ggplot(data, aes(x = seq_along(score), y = score)) +
   geom_smooth(se = FALSE, color = "orange") +
   theme_minimal() +
   labs(title = "Sentiment Trajectory by Entry", x = "Entry Order", y = "Average Sentiment")
+
+# Extract season info (s1, s2) into a new column
+data <- data %>%
+  mutate(season = str_extract(id, "s\\d+"))
+
+# Histogram comparison by season
+ggplot(data, aes(x = score, fill = season)) +
+  geom_histogram(binwidth = 0.1, position = "dodge", color = "white") +
+  theme_minimal() +
+  labs(title = "Sentiment Score Distribution by Season", 
+       x = "Average Sentiment", y = "Count") +
+  scale_fill_brewer(palette = "Set1")
+
+# Sentiment trajectory by season (faceted)
+ggplot(data, aes(x = seq_along(score), y = score, color = season)) +
+  geom_line(alpha = 0.7) +
+  geom_smooth(se = FALSE) +
+  theme_minimal() +
+  labs(title = "Sentiment Trajectory by Season", 
+       x = "Entry Order", y = "Average Sentiment") +
+  facet_wrap(~season, scales = "free_x")
+
+# Extract season info
+data <- data %>%
+  mutate(season = str_extract(id, "s\\d+")) %>%
+  group_by(season) %>%
+  mutate(entry_order = row_number()) %>%  # order within season
+  ungroup()
 ```
 
-```{r}
-# Fine-grained Emotions (NRC)
-emotion_scores <- get_nrc_sentiment(data$text_analysis)
-data_emotions <- bind_cols(data, emotion_scores)
+### *Fine-grained Emotions with* Syuzhet's NRC Emotion Lexicon
+
+```{r fine-grained}
+emotion_scores <- get_nrc_sentiment(preprocessed$text_ready)
+data_emotions <- bind_cols(preprocessed, emotion_scores)
 
 # Summarize overall emotions
 emotion_summary <- emotion_scores %>%
